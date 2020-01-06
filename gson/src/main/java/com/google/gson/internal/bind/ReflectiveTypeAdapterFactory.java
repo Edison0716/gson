@@ -194,8 +194,11 @@ public final class ReflectiveTypeAdapterFactory implements TypeAdapterFactory {
     abstract void read(JsonReader reader, Object value) throws IOException, IllegalAccessException;
   }
 
+  // 内部类 反射 TypeAdapter 针对的是复合数据 非基本类型
   public static final class Adapter<T> extends TypeAdapter<T> {
+    // 用于创建符合类型数据构造器 通过反射创建
     private final ObjectConstructor<T> constructor;
+    // 将该类型中的对象进行保存
     private final Map<String, BoundField> boundFields;
 
     Adapter(ObjectConstructor<T> constructor, Map<String, BoundField> boundFields) {
