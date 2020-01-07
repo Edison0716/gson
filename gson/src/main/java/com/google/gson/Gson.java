@@ -121,8 +121,8 @@ public final class Gson {
    * lookup would stack overflow. We cheat by returning a proxy type adapter.
    * The proxy is wired up once the initial adapter has been created.
    */
-  private final ThreadLocal<Map<TypeToken<?>, FutureTypeAdapter<?>>> calls
-      = new ThreadLocal<Map<TypeToken<?>, FutureTypeAdapter<?>>>();
+  // 多线程 线程独享变量 线程之间缓存互不影响
+  private final ThreadLocal<Map<TypeToken<?>, FutureTypeAdapter<?>>> calls = new ThreadLocal<Map<TypeToken<?>, FutureTypeAdapter<?>>>();
 
   private final Map<TypeToken<?>, TypeAdapter<?>> typeTokenCache = new ConcurrentHashMap<TypeToken<?>, TypeAdapter<?>>();
 
@@ -192,6 +192,7 @@ public final class Gson {
         Collections.<TypeAdapterFactory>emptyList());
   }
 
+  // 提前创建出来基本数据类型的TypeAdapter最后添加反射复合数据类型的TypeAdapter
   Gson(Excluder excluder, FieldNamingStrategy fieldNamingStrategy,
       Map<Type, InstanceCreator<?>> instanceCreators, boolean serializeNulls,
       boolean complexMapKeySerialization, boolean generateNonExecutableGson, boolean htmlSafe,
@@ -238,10 +239,8 @@ public final class Gson {
     factories.add(TypeAdapters.SHORT_FACTORY);
     TypeAdapter<Number> longAdapter = longAdapter(longSerializationPolicy);
     factories.add(TypeAdapters.newFactory(long.class, Long.class, longAdapter));
-    factories.add(TypeAdapters.newFactory(double.class, Double.class,
-            doubleAdapter(serializeSpecialFloatingPointValues)));
-    factories.add(TypeAdapters.newFactory(float.class, Float.class,
-            floatAdapter(serializeSpecialFloatingPointValues)));
+    factories.add(TypeAdapters.newFactory(double.class, Double.class, doubleAdapter(serializeSpecialFloatingPointValues)));
+    factories.add(TypeAdapters.newFactory(float.class, Float.class, floatAdapter(serializeSpecialFloatingPointValues)));
     factories.add(TypeAdapters.NUMBER_FACTORY);
     factories.add(TypeAdapters.ATOMIC_INTEGER_FACTORY);
     factories.add(TypeAdapters.ATOMIC_BOOLEAN_FACTORY);
@@ -267,16 +266,14 @@ public final class Gson {
     factories.add(TypeAdapters.TIMESTAMP_FACTORY);
     factories.add(ArrayTypeAdapter.FACTORY);
     factories.add(TypeAdapters.CLASS_FACTORY);
-
     // type adapters for composite and user-defined types
     factories.add(new CollectionTypeAdapterFactory(constructorConstructor));
     factories.add(new MapTypeAdapterFactory(constructorConstructor, complexMapKeySerialization));
     this.jsonAdapterFactory = new JsonAdapterAnnotationTypeAdapterFactory(constructorConstructor);
     factories.add(jsonAdapterFactory);
     factories.add(TypeAdapters.ENUM_FACTORY);
-    factories.add(new ReflectiveTypeAdapterFactory(
-        constructorConstructor, fieldNamingStrategy, excluder, jsonAdapterFactory));
-
+    // 添加复合数据类型的TypeAdapter 注意这个必须是最后添加复合数据类型 就是因为它能匹配几乎任何类型 再getAdapter方法中就会明白
+    factories.add(new ReflectiveTypeAdapterFactory(constructorConstructor, fieldNamingStrategy, excluder, jsonAdapterFactory));
     this.factories = Collections.unmodifiableList(factories);
   }
 
@@ -428,9 +425,18 @@ public final class Gson {
    *
    * @throws IllegalArgumentException if this GSON cannot serialize and
    *     deserialize {@code type}.
+   *
+   * 循环递归调用:
+   * gson.getAdapter(type) ---> （ReflectiveTypeAdapterFactory）factory.create(this, type) ---> getBoundFields()
+   * ---> createBoundField() ---> (Gson)context.getAdapter(fieldType)
+   *
+   *
+   *
+   *
    */
   @SuppressWarnings("unchecked")
   public <T> TypeAdapter<T> getAdapter(TypeToken<T> type) {
+    // 缓存的数据要是有的话 则从缓存取
     TypeAdapter<?> cached = typeTokenCache.get(type == null ? NULL_KEY_SURROGATE : type);
     if (cached != null) {
       return (TypeAdapter<T>) cached;
@@ -445,16 +451,19 @@ public final class Gson {
     }
 
     // the key and value type parameters always agree
+    // 用于防止无限递归 下次递归在遇到就直接返回 这里不太好理解 好好理解一下
     FutureTypeAdapter<T> ongoingCall = (FutureTypeAdapter<T>) threadCalls.get(type);
     if (ongoingCall != null) {
       return ongoingCall;
     }
 
     try {
+      // 定义了一个代理对象 用于保存此次的递归
       FutureTypeAdapter<T> call = new FutureTypeAdapter<T>();
       threadCalls.put(type, call);
 
       for (TypeAdapterFactory factory : factories) {
+        // 代理模式  -  递归调用 所以这里有个问题就是处理不好会无限进行递归调用直至堆栈溢出
         TypeAdapter<T> candidate = factory.create(this, type);
         if (candidate != null) {
           call.setDelegate(candidate);
@@ -551,6 +560,8 @@ public final class Gson {
    *
    * @throws IllegalArgumentException if this GSON cannot serialize and
    *     deserialize {@code type}.
+   *
+   * 通过type寻找对应的TypeAdapter
    */
   public <T> TypeAdapter<T> getAdapter(Class<T> type) {
     return getAdapter(TypeToken.get(type));
@@ -928,6 +939,7 @@ public final class Gson {
       reader.peek();
       isEmpty = false;
       TypeToken<T> typeToken = (TypeToken<T>) TypeToken.get(typeOfT);
+      // 根据Type找到对应的TypeAdapter 从而开启递归调用解析Json
       TypeAdapter<T> typeAdapter = getAdapter(typeToken);
       T object = typeAdapter.read(reader);
       return object;
